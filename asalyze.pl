@@ -7,13 +7,14 @@ use Getopt::Long;
 use Time::Local;
 
 ## Global variables
-my ($o_verb, $o_help, $o_log);
+my ($o_verb, $o_help, $o_log, $o_bw);
 
 ## Funtions
 sub check_options {
 	Getopt::Long::Configure ("bundling");
 	GetOptions(
 		'l:s'     => \$o_log,            'log:s'	=> \$o_log,
+		'b'     => \$o_bw,            'bandwidth'	=> \$o_bw,
 		'v'     => \$o_verb,            'verbose'	=> \$o_verb,
 		'h'     => \$o_help,            'help'	=> \$o_help,
 	);
@@ -34,6 +35,8 @@ sub help() {
         print <<EOT;
 -v, --verbose
         print extra debugging information
+-b, --bandwidth
+	bandwidth consumption
 -h, --help
 	print this help message
 -l, --log
@@ -61,52 +64,6 @@ sub ProcessHost($){
 	return ($ip, $port, $name);
 }
 
-sub ProcessLine(@){
-	my (@vals) = @_;
-
-	my $month = $vals[0];
-	my $day = $vals[1];
-	my $time = $vals[2];
-	my $device = $vals[3];
-	my $msg = $vals[4];
-	my $action = $vals[5];
-
-	my($proto, $conn_id, $src, $dst, $duration, $bytes);
-
-	if($msg eq "%fwsm-6-302013:"){
-		$proto = $vals[7];
-		$conn_id = $vals[9];
-		$src = $vals[11];
-		$dst = $vals[14];
-	} elsif($msg eq "%fwsm-6-302016:"){
-		$proto = $vals[6];
-		$conn_id = $vals[8];
-		$src = $vals[10];
-		$dst = $vals[12];
-		$duration = $vals[14];
-		$bytes = $vals[16];
-	} elsif($msg eq "%fwsm-6-106028:"){
-		$proto = $vals[6];
-		$src = $vals[12];
-		$dst = $vals[14];
-	} elsif($msg eq "%fwsm-6-106015:"){
-		$proto = $vals[6];
-		$src = $vals[10];
-		$dst = $vals[12];
-	} elsif($msg eq " %fwsm-4-106023"){
-		$proto = $vals[6];
-		$src = $vals[8];
-		$dst = $vals[10];
-	} elsif($msg eq "%fwsm-2-106007:"){
-		$proto = $vals[7];
-		$src = $vals[9];
-		$dst = $vals[11];
-	} else {
-		return 0;
-	}
-
-	return ($device, $action, $proto, $conn_id, $src, $dst);
-}
 
 sub header($){
 	my ($header) = @_;
@@ -120,30 +77,59 @@ write;
 
 }
 
-sub Summary($){
-  	my %hash = %{shift()};
+sub Summary($$){
+	my(%hash) = %{$_[0]};
+	my $datatype = $_[1];
 
 	my $i=0;
+	my $total;
 	foreach my $key (sort {$hash{$b}<=>$hash{$a}} keys %hash) {
 		$i++;
 		my $entries = $hash{$key};
+		$total = $entries + $total;
+		if($datatype eq "bytes"){
+			$entries = Bytes2HR($entries);
+		}	
 
 	format out = 	
-@<<<<     @<<<<<<<<<<<<<<<<<<<<<     @<<<<<<<<      
+@<<<<     @<<<<<<<<<<<<<<<<<<<<<     @<<<<<<<<<<<<<<<
 $i, $key, $entries
 .
 local $~ ="out";
 write;
 
 		if($i > 9){
+			print "Total: ";
+			if($datatype eq "bytes"){
+				print Bytes2HR($total);
+			} else {
+				print "$total";
+			}
+			print "\n";
 			return;
 		}
 	}
 }
 
-sub ProcessLog($){
+sub Bytes2HR($){
+	my ($bytes) = @_;
+
+	if($bytes < 1024){
+		return $bytes." bytes";
+	} elsif($bytes < 1048576){
+		return int($bytes/1024)." KB";
+	} else {
+		return int($bytes/1024/1024)." MB";
+	}
+#	} else {
+#		return int($bytes/1024/1024/1024)." GB";
+#	}
+}
+
+sub ProcessLog2($){
 	my ($log) = @_;
 
+	my @arr;	
 	my $max=0;
 	my $i=0;
 	open(L, "$log");
@@ -170,13 +156,9 @@ sub ProcessLog($){
 		my $device = $vals[3];
 		my $msg = $vals[4];
 
-		if($max && $i > $max){
-			last;
-		}
-
 		# Process the line and get important data
 		my ($device, $action, $proto, $conn_id, $src, $dst);
-		($device, $action, $proto, $conn_id, $src, $dst) = ProcessLine(@vals);
+#		($device, $action, $proto, $conn_id, $src, $dst) = ProcessLine(@vals);
 
 		if($src){
 			my ($src_i, $src_p) = ProcessHost($src);
@@ -225,29 +207,138 @@ sub ProcessLog($){
 
 	print "# Connections\n";
 	print "Total connections: $g_records\n";
+		$arr[$i] = 
 	print "Connections per sec: $rps\n";
 
 	print "\n";
 	print "### Denied connections\n\n";
 	print "# Top source address\n";
 	header("Nr        Source address             # entries");
-	Summary(\%collect_src);
+#	Summary(\%collect_src);
 
 	print "\n\n";
 
 	print "# Top destination address\n";
 	header("Nr        Destination address        # entries");
-	Summary(\%collect_dst);
+#	Summary(\%collect_dst);
 
 	print "\n\n";
 
 	print "# Top destination ports\n";
 	header("Nr        Port #                     # entries");
-	Summary(\%collect_dst_port);
+#	Summary(\%collect_dst_port);
+}
+
+sub ProcessLog($){
+#tkf
+	my ($log) = @_;
+
+	my $i=0;
+	my @arr;
+	open(L, "$log");
+	while(<L>){
+		chomp($_);
+		
+		my @vals = split(" ", lc($_));
+		my $month = $vals[0];
+		my $day = $vals[1];
+		my $time = $vals[2];
+		my $device = $vals[3];
+		my $msg = $vals[4];
+		my $action = $vals[5];
+
+		# Process the line and get important data
+		my ($proto, $conn_id, $src, $dst, $duration, $bytes);
+
+		if($msg eq "%fwsm-6-302013:"){
+			$proto = $vals[7];
+			$conn_id = $vals[9];
+			$src = $vals[11];
+			$dst = $vals[14];
+		} elsif($msg eq "%fwsm-6-302016:" || $msg eq "%asa-6-302014:" || $msg eq "%asa-6-302016:"){
+			$proto = $vals[6];
+			$conn_id = $vals[8];
+			$dst = $vals[10];
+			$src = $vals[12];
+			$duration = $vals[14];
+			$bytes = $vals[16];
+		} elsif($msg eq "%fwsm-6-106028:"){
+			$proto = $vals[6];
+			$src = $vals[12];
+			$dst = $vals[14];
+		} elsif($msg eq "%fwsm-6-106015:"){
+			$proto = $vals[6];
+			$src = $vals[10];
+			$dst = $vals[12];
+		} elsif($msg eq " %fwsm-4-106023"){
+			$proto = $vals[6];
+			$src = $vals[8];
+			$dst = $vals[10];
+		} elsif($msg eq "%fwsm-2-106007:"){
+			$proto = $vals[7];
+			$src = $vals[9];
+			$dst = $vals[11];
+		} else {
+			next;
+		}
+		$arr[$i] = "$msg;;$action;;$proto;;$src;;$dst;;$duration;;$bytes";
+		$i++;
+	}
+	close(L);
+	return @arr;
+}
+
+
+sub BandwidthProcess($){
+	my @arr = @{$_[0]};
+
+	my %cache_src;
+	my %cache_dst;
+	my %cache_port;
+	my $bytes_total=0;
+	foreach(@arr){
+		my ($msg, $action, $proto, $src, $dst, $duration, $bytes) = split(";;", $_);
+		my ($src_ip, $src_port, $src_name) = ProcessHost($src);
+		my ($dst_ip, $dst_port, $dst_name) = ProcessHost($dst);
+
+		# Proto/Port
+		my $src_proto_port = "$proto/$src_port";
+		my $dst_proto_port = "$proto/$dst_port";
+		$cache_port{$src_proto_port} = $cache_port{$src_proto_port} + $bytes;
+		$cache_port{$dst_proto_port} = $cache_port{$dst_proto_port} + $bytes;
+
+		# Src/Dest
+		$cache_src{$src_ip} = $cache_src{$src_ip} + $bytes;
+		$cache_dst{$dst_ip} = $cache_dst{$dst_ip} + $bytes;
+
+		# Total bytes
+		$bytes_total = $bytes_total + $bytes;		
+	}
+
+	# Summary
+	print "# Top destination ports\n";
+	header("Nr        Proto/Port                     # bytes");
+	Summary(\%cache_port, "bytes");
+
+	print "# Top src\n";
+	header("Nr        Src                     # bytes");
+	Summary(\%cache_src, "bytes");
+
+	print "# Top dst\n";
+	header("Nr        dst                     # bytes");
+	Summary(\%cache_dst, "bytes");
+
+	print "\n\n";
+	print "Total transfered bytes: ".Bytes2HR($bytes_total)."\n";
 }
 
 
 ## Main
 check_options();
 
-ProcessLog($o_log);
+my @arr = ProcessLog($o_log);
+
+if($o_bw){
+	print "Processing Bandwitdh\n";
+	BandwidthProcess(\@arr);
+}
