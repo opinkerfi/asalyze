@@ -1,5 +1,5 @@
 #!/usr/bin/perl -w
-# ex: ./asalyze.pl --log=/var/log/fwsm.log
+# ex: ./asalyze.pl --log=/var/log/fwsm.log -d/-b
 
 use strict;
 no warnings;
@@ -7,7 +7,7 @@ use Getopt::Long;
 use Time::Local;
 
 ## Global variables
-my ($o_verb, $o_help, $o_log, $o_bw);
+my ($o_verb, $o_help, $o_log, $o_bw, $o_deny);
 
 ## Funtions
 sub check_options {
@@ -15,6 +15,7 @@ sub check_options {
 	GetOptions(
 		'l:s'     => \$o_log,            'log:s'	=> \$o_log,
 		'b'     => \$o_bw,            'bandwidth'	=> \$o_bw,
+		'd'     => \$o_deny,            'deny'	=> \$o_deny,
 		'v'     => \$o_verb,            'verbose'	=> \$o_verb,
 		'h'     => \$o_help,            'help'	=> \$o_help,
 	);
@@ -28,6 +29,11 @@ sub check_options {
 		print "--log missing\n";
 		exit 1;
 	}
+
+	if(!defined($o_bw) && !defined($o_deny)){
+		print "You need to choose output option\n";
+		exit;
+	}
 }
 
 sub help() {
@@ -35,12 +41,16 @@ sub help() {
         print <<EOT;
 -v, --verbose
         print extra debugging information
--b, --bandwidth
-	bandwidth consumption
 -h, --help
 	print this help message
+# Input
 -l, --log
 	logfile to read
+# Output
+-b, --bandwidth
+	Display information about bandwidth consumption
+-d, --deny
+	Display information about deny
 EOT
 }
 
@@ -121,121 +131,58 @@ sub Bytes2HR($){
 	} else {
 		return int($bytes/1024/1024)." MB";
 	}
-#	} else {
-#		return int($bytes/1024/1024/1024)." GB";
-#	}
 }
 
-sub ProcessLog2($){
-	my ($log) = @_;
+sub DenyProcess($){
+#tkf 
+	my @arr = @{$_[0]};
 
-	my @arr;	
-	my $max=0;
-	my $i=0;
-	open(L, "$log");
+	my %cache_src;
+	my %cache_dst;
+	my %cache_port;
+	foreach(@arr){
+		my ($msg, $action, $proto, $src, $dst, $duration, $bytes) = split(";;", $_);
+		my ($src_ip, $src_port, $src_name) = ProcessHost($src);
+		my ($dst_ip, $dst_port, $dst_name) = ProcessHost($dst);
 
-	my $g_records=0;
-	my $g_sec_total=0;
+		if($action eq "deny"){
+			# Proto/Port
+			my $src_proto_port = "$proto/$src_port";
+			my $dst_proto_port = "$proto/$dst_port";
+			$cache_port{$src_proto_port} = $cache_port{$src_proto_port} + 1;
+			$cache_port{$dst_proto_port} = $cache_port{$dst_proto_port} + 1;
 
-	my $p_sec=0; # Keep previous sec
-	my $g_sec=0;
-
-	my $r_per_sec=0;
-
-	my $g_time_start = time();
-	my %collect_src;
-	my %collect_dst;
-	my %collect_dst_port;
-	while(<L>){
-		chomp($_);
-		
-		my @vals = split(" ", lc($_));
-		my $month = $vals[0];
-		my $day = $vals[1];
-		my $time = $vals[2];
-		my $device = $vals[3];
-		my $msg = $vals[4];
-
-		# Process the line and get important data
-		my ($device, $action, $proto, $conn_id, $src, $dst);
-#		($device, $action, $proto, $conn_id, $src, $dst) = ProcessLine(@vals);
-
-		if($src){
-			my ($src_i, $src_p) = ProcessHost($src);
-			my ($dst_i, $dst_p) = ProcessHost($dst);
-
-			if($action eq "deny"){
-				# Collect and count data
-
-				# src ip address
-				$collect_src{$src_i} = $collect_src{$src_i}+1;
-				# dst ip address
-				$collect_dst{$dst_i} = $collect_dst{$dst_i}+1;
-
-				# dst port
-				$collect_dst_port{$dst_p} = $collect_dst_port{$dst_p}+1;
-			}
+			# Src/Dest
+			$cache_src{$src_ip} = $cache_src{$src_ip} +1;
+			$cache_dst{$dst_ip} = $cache_dst{$dst_ip} +1;
 		}
-
-		# General stats
-		my ($hour, $min, $sec) = split(":", $time);
-
-		if($p_sec ne $sec){
-			# New sec
-			$g_sec_total++;
-		} 
-
-		# Count records
-		$g_records++;
-
-		# Keep current sec
-		$p_sec=$sec;
-
-		$i++;
 	}
-	close(L);
 
-	my $g_time_end = time();
-	my $g_time_total = $g_time_end - $g_time_start;
-
-	my $rps = int($g_records / $g_sec_total);
-	print "### Summary\n";
-	print "# General\n";
-	print "Summary generated in: $g_time_total secs\n"; 
-	print "Time covered: $g_sec_total secs\n";
-	print "\n";
-
-	print "# Connections\n";
-	print "Total connections: $g_records\n";
-		$arr[$i] = 
-	print "Connections per sec: $rps\n";
-
-	print "\n";
-	print "### Denied connections\n\n";
-	print "# Top source address\n";
-	header("Nr        Source address             # entries");
-#	Summary(\%collect_src);
-
-	print "\n\n";
-
-	print "# Top destination address\n";
-	header("Nr        Destination address        # entries");
-#	Summary(\%collect_dst);
-
-	print "\n\n";
-
+	# Summary
 	print "# Top destination ports\n";
-	header("Nr        Port #                     # entries");
-#	Summary(\%collect_dst_port);
+	header("Nr        Proto/Port                     #");
+	Summary(\%cache_port, "");
+
+	print "# Top src\n";
+	header("Nr        Src                     #");
+	Summary(\%cache_src, "");
+
+	print "# Top dst\n";
+	header("Nr        dst                     #");
+	Summary(\%cache_dst, "");
 }
 
+# Logfile parsing. 
 sub ProcessLog($){
-#tkf
 	my ($log) = @_;
 
 	my $i=0;
 	my @arr;
+	my ($sec_curr, $sec_prev);
+	my $g_records=0;
+	my $g_sec_total=0;
 	open(L, "$log");
+	my $g_time_start=time();
 	while(<L>){
 		chomp($_);
 		
@@ -249,6 +196,21 @@ sub ProcessLog($){
 
 		# Process the line and get important data
 		my ($proto, $conn_id, $src, $dst, $duration, $bytes);
+
+
+		# General stats
+		my ($hour, $min, $sec_curr) = split(":", $time);
+
+		if($sec_prev ne $sec_curr){
+			# Seconds have increased
+			$g_sec_total++;
+		} 
+
+		# Count records
+		$g_records++;
+
+		# Keep current sec
+		$sec_prev=$sec_curr;
 
 		if($msg eq "%fwsm-6-302013:"){
 			$proto = $vals[7];
@@ -285,6 +247,21 @@ sub ProcessLog($){
 		$i++;
 	}
 	close(L);
+
+	my $g_time_end = time();
+	my $g_time_total = $g_time_end - $g_time_start;
+
+	my $rps = int($g_records / $g_sec_total);
+	print "### Summary\n";
+	print "# General\n";
+	print "Summary generated in: $g_time_total secs\n"; 
+	print "Time covered: $g_sec_total secs\n";
+	print "\n";
+
+	print "# Connections\n";
+	print "Total connections: $g_records\n";
+	print "Connections per sec: $rps\n\n";
+
 	return @arr;
 }
 
@@ -341,4 +318,7 @@ my @arr = ProcessLog($o_log);
 if($o_bw){
 	print "Processing Bandwitdh\n";
 	BandwidthProcess(\@arr);
+} elsif($o_deny){
+	print "Processing denys\n";
+	DenyProcess(\@arr);
 }
